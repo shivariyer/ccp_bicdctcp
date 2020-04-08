@@ -1,0 +1,13 @@
+[package]
+name = "ccp_bicdctcp"
+version = "0.1.0"
+authors = ["Shiva R. Iyer <shiva.iyer@cs.nyu.edu>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+portus = "0.5"
+clap = "2.29"
+slog = "2"
+rusty-machine = "0.5.4"
