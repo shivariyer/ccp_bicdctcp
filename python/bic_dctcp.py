@@ -9,8 +9,8 @@
 
 from __future__ import print_function
 
-from sklearn import cluster
-from sklearn import preprocessing
+#from sklearn import cluster
+#from sklearn import preprocessing
 
 import portus
 import numpy as np
@@ -44,100 +44,107 @@ class Dataset(object):
 
 class BIC_DCTCP_Flow():
     INIT_CWND = 10
-    REQ_BACKLOG_LEN = 100
+    BACKLOG_LEN_MAX = 100
     RANDOM_STATE = 1
     
-    def __init__(self, datapath, datapath_info, cwnd_max):
-
+    def __init__(self, datapath, datapath_info, cwnd_max, backlog):
+        
         # cc parameters
         self.datapath = datapath
         self.datapath_info = datapath_info
-        self.init_cwnd = int(self.datapath_info.mss * BIC_DCTCP_Flow.INIT_CWND)
+        self.init_cwnd = float(self.datapath_info.mss * BIC_DCTCP_Flow.INIT_CWND)
         self.cwnd = self.init_cwnd
         self.cwnd_max = cwnd_max
+
+        self.backlog = backlog
+        if self.backlog > BIC_DCTCP_Flow.BACKLOG_LEN_MAX:
+            self.backlog = BIC_DCTCP_Flow.BACKLOG_LEN_MAX
+
         self.datapath.set_program("default", [("Cwnd", self.cwnd)])
         
         # model specific parameters
         # self.micros_prev = None
         self.weights = (0.5, 0.5)
-        self.scaler = preprocessing.MinMaxScaler()
-        self.data = []
-        self.model = cluster.KMeans(2, random_state=BIC_DCTCP_Flow.RANDOM_STATE)
+        #self.scaler = preprocessing.MinMaxScaler()
+        self.data = np.empty(self.backlog) * np.nan
+        #self.model = cluster.KMeans(2, random_state=BIC_DCTCP_Flow.RANDOM_STATE)
+        self.centroids = ()
+        self.counter = 0
+        self.rtt_max = 0
+        self.rtt_min = np.inf
+        self.ecn_frac = 0
+        self.max_centroid_dist = 0
         
-        log.debug('New flow, init_cwnd = {} bytes'.format(self.init_cwnd))
+        log.info('New flow, init_cwnd = {} bytes'.format(self.init_cwnd))
     
     def on_report(self, r):
-        # add r.rtt to the list of recent N RTTs, use r.micros to
-        # compute IAT and keep adding that also to the list
-        # if micros_prev is None:
-        #     micros_prev = r.micros
-        # else:
-        #     iat = r.micros - micros_prev
-        #     micros_prev = r.micros
-        
-        log.debug('Received a report')
-        rtt_feature = self.weights[0] * np.exp(r.rtt / 1e6)
-        #iat_feature = self.weights[1] * np.exp(r.iat / 1e6)
-        #self.data.append((rtt_feature, iat_feature))
-        self.data.append(rtt_feature)
-        if len(self.data) > BIC_DCTCP_Flow.REQ_BACKLOG_LEN:
-            self.data.pop(0)
-        
-        if len(self.data) < BIC_DCTCP_Flow.REQ_BACKLOG_LEN:
-        # if True:
-            log.info('Following BIC+MD while list builds up')
-            # TODO: fall back to AIMD or something in the meanwhile as the
-            # list grows to required length
-            if r.loss > 0 or r.sacked > 0:
-            #if r.sacked > 0:
-                log.debug('loss={}, sacked={}'.format(r.loss, r.sacked))
-                #log.debug('sacked={}'.format(r.sacked))
-                self.cwnd /= 2
+        if r.loss > 0 or r.sacked > 0:
+            #self.cwnd /= 2
+            self.cwnd *= (1 - self.ecn_frac/2)
+            self.cwnd = max(self.cwnd, self.init_cwnd)
+            log.info("packet loss, loss={}, sacked={}, ecn_frac={}, cwnd={}".format(r.loss, r.sacked, self.ecn_frac, self.cwnd))
+        else:
+            if r.rtt < self.rtt_min:
+                self.rtt_min = r.rtt
+            if r.rtt > self.rtt_max:
+                self.rtt_max = r.rtt
+            # rtt is in microseconds (us)
+            #rtt_feature = np.exp(r.rtt / 1e6)
+            rtt_feature = np.tanh(r.rtt / 1e6)
+            self.data[self.counter] = rtt_feature
+            self.counter = (self.counter+1) % self.backlog
+            if len(self.centroids) == 0:
+                self.centroids = (rtt_feature,)
+            elif len(self.centroids) == 1:
+                self.centroids = (self.centroids[0], rtt_feature)
+            else:
+                # select only valid data in the backlog
+                data_valid = self.data[np.isfinite(self.data)]
+
+                # compute distances to old centroid and assign labels
+                dist_0 = np.fabs(data_valid - self.centroids[0])
+                dist_1 = np.fabs(data_valid - self.centroids[1])
+                labels = (dist_0 > dist_1) # cluster 1 if dist_0 > dist_1, cluster 0 else
+
+                # compute the new centroids after the new assignment
+                centroid_0 = data_valid[~labels].mean() if (~labels).any() else self.centroids[0]
+                centroid_1 = data_valid[labels].mean() if labels.any() else self.centroids[1]
+
+                # if existing dist between centroids is greater, then
+                # don't update the cluster centroids, else update the
+                # centroids
+                if self.max_centroid_dist == 0:
+                    self.max_centroid_dist = abs(centroid_0 - centroid_1)
+                elif self.max_centroid_dist < abs(centroid_0 - centroid_1):
+                    self.max_centroid_dist = abs(centroid_0 - centroid_1)
+                    self.centroids = (centroid_0, centroid_1)
+
+                # assume cluster 0 is CONG, cluster 1 is NOCONG
+                n_ecn_NOCONG, n_ecn_CONG = labels.sum(), (~labels).sum()
+
+                # if that assumption is wrong, then swap the cluster counts
+                if self.centroids[0] < self.centroids[1]:
+                    n_ecn_NOCONG, n_ecn_CONG = n_ecn_CONG, n_ecn_NOCONG
+
+                # compute the ECN frac
+                self.ecn_frac = n_ecn_CONG/float(labels.size)
+                
+                log.debug('n_ecn_0: {}, n_ecn_1: {}, ecn_frac: {}'.format(n_ecn_NOCONG, n_ecn_CONG, self.ecn_frac))
+                log.debug('Centroids: ({:.7f}, {:.7f})'.format(*self.centroids))
+            if self.ecn_frac > 1:
+                self.cwnd *= (1 - self.ecn_frac/2)
                 self.cwnd = max(self.cwnd, self.init_cwnd)
             else:
                 self.cwnd += (self.cwnd_max - self.cwnd) / 2
                 self.cwnd = min(self.cwnd, self.cwnd_max)
-        else:
-            # TODO: if the list of recent RTTs+IATs is pretty big, then do
-            # a clustering and predict ECN for each packet (i.e. the
-            # cluster group), and then compute fraction of ECN
-            X = self.scaler.fit_transform(np.asarray(self.data))
-            self.model.fit(X)
-            ecn_bits = self.model.labels_.astype(bool)
-            centroids = self.model.cluster_centers_
-            if centroids[0] > centroids[1]:
-                ecn_bits = ~ecn_bits
-            
-            log.debug('Cluster centers: {} {}'.format(centroids[0], centroids[1]))
-            
-            ecn_frac = ecn_bits.sum() / ecn_bits.size
-            
-            log.info('ecn_frac={}'.format(ecn_frac))
-            
-            # TODO: if the frac of ECN is < threshold, then do BIC
-            # increase, else do DCTCP decrease
-            if (ecn_frac == 0):
-                if (r.loss > 0) or (r.sacked > 0):
-                #if r.sacked == 0:
-                    log.debug('loss={}, sacked={}'.format(r.loss, r.sacked))
-                    #log.debug('sacked={}'.format(r.sacked))
-                    self.cwnd /= 2
-                    self.cwnd = max(self.cwnd, self.init_cwnd)
-                else:
-                    self.cwnd += (self.cwnd_max - self.cwnd) / 2
-                    self.cwnd = min(self.cwnd, self.cwnd_max)
-            else:
-                log.debug('alpha={}'.format(ecn_frac))
-                self.cwnd *= (1 - ecn_frac/2)
-                self.cwnd = max(self.cwnd, self.init_cwnd)
-        
-        log.debug('New cwnd: {} bytes'.format(self.cwnd))
+            log.info('cur rtt: {} us, rtt_feature: {:.7f}, max rtt: {} us, min rtt: {} us, ecn_frac: {}, cwnd: {} bytes'
+                      .format(r.rtt, rtt_feature, self.rtt_max, self.rtt_min, self.ecn_frac, self.cwnd))
         self.datapath.update_field("Cwnd", int(self.cwnd))
 
 
 class BIC_DCTCP(portus.AlgBase):
     
-    def __init__(self, cwnd_max, agg_npkts=10):
+    def __init__(self, cwnd_max, backlog, agg_npkts=10):
         """ 
         cwnd_max: The upper limit on the congestion window. 
         
@@ -152,6 +159,7 @@ class BIC_DCTCP(portus.AlgBase):
         """
         super(BIC_DCTCP, self).__init__()
         self.cwnd_max = cwnd_max
+        self.backlog = backlog
         #self.version = version
         self.agg_npkts = agg_npkts
         log.debug('Created BIC_DCTCP class')
@@ -159,8 +167,8 @@ class BIC_DCTCP(portus.AlgBase):
     def datapath_programs(self):
         return {"default" : """\
                             (def (Report
-                                  (volatile rtt 0)
-                                  (volatile iat 0)
+                                  (rtt 0)
+                                  (iat 0)
                                   (volatile acked 0)
                                   (volatile sacked 0)
                                   (volatile loss 0)
@@ -169,21 +177,13 @@ class BIC_DCTCP(portus.AlgBase):
                             (when true
                               (:= Report.rtt Flow.rtt_sample_us)
                               (:= Report.iat Micros)
-                              (:= Report.acked (+ Report.acked Ack.bytes_acked))
-                              (:= Report.sacked (+ Report.sacked Ack.packets_misordered))
+                              (:= Report.acked Ack.bytes_acked)
+                              (:= Report.sacked Ack.packets_misordered)
                               (:= Report.loss Ack.lost_pkts_sample)
                               (:= Report.timeout Flow.was_timeout)
-                              (fallthrough)
-                              )
-                            (when (|| Report.timeout (> Report.loss 0))
                               (report)
                               (:= Micros 0)
-                              )
-                            (when (> Micros Flow.rtt_sample_us)
-                              (report)
-                              (:= Micros 0)
-                              )
-
+                            )
             """
             }
     
@@ -262,7 +262,7 @@ class BIC_DCTCP(portus.AlgBase):
     #         raise Exception('BIC_DCTCP: Unsupported version')
     
     def new_flow(self, datapath, datapath_info):
-        return BIC_DCTCP_Flow(datapath, datapath_info, self.cwnd_max)
+        return BIC_DCTCP_Flow(datapath, datapath_info, self.cwnd_max, self.backlog)
 
 
 if __name__ == '__main__':
@@ -270,10 +270,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('BIC-DCTCP for mmWave flows')
     #parser.add_argument('version', type=int, choices=(1,2), help='\'1\' or \'2\'')
     parser.add_argument('cwnd_max', type=int, help='Max congestion window (bytes)')
+    parser.add_argument('--backlog', '-k', default=10, help='Length of backlog for clustering')
     parser.add_argument('--ipc', choices=('netlink','unix'), default='netlink', help='Set type of ipc to use')
     parser.add_argument('--debug', action='store_true', help='Print debug messages')
     parser.add_argument('--log', choices=('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'),
                         default='DEBUG', help='Logging level (default: INFO)')
+    parser.add_argument('--log-file-path', dest='logfilepath',
+                        help='File in which to log console output')
     args = parser.parse_args()
     
     log_level_dict = {'DEBUG' : logging.DEBUG,
@@ -287,18 +290,22 @@ if __name__ == '__main__':
     
     ch = logging.StreamHandler()
     ch.setLevel(log_level_dict[args.log])
-    
-    fh = logging.FileHandler('logs/bic_dctcp_{}_{}.log'.format(args.cwnd_max, args.ipc))
+
+    if args.logfilepath is None:
+        args.logfilepath = 'logs/bic_dctcp_{}_{}.log'.format(args.cwnd_max, args.ipc)
+    print('Logging console output to "{}"'.format(args.logfilepath))
+    fh = logging.FileHandler(args.logfilepath)
     fh.setLevel(log_level_dict[args.log])
+
+    colorFormatter = coloredlogs.ColoredFormatter(fmt='%(asctime)s [%(name)s] %(levelname)s - %(message)s', datefmt="%H:%M:%S")
+    simpleFormatter = logging.Formatter(fmt='%(asctime)s [%(name)s] %(levelname)s - %(message)s', datefmt="%H:%M:%S")
     
-    formatter = coloredlogs.ColoredFormatter(fmt='%(asctime)s [%(name)s] %(levelname)s - %(message)s', datefmt="%H:%M:%S")
-    
-    ch.setFormatter(formatter)
-    fh.setFormatter(formatter)
+    ch.setFormatter(colorFormatter)
+    fh.setFormatter(simpleFormatter)
     log.addHandler(ch)
     log.addHandler(fh)
     
     #alg = BIC_DCTCP(args.cwnd_max, args.version)
-    alg = BIC_DCTCP(args.cwnd_max)
+    alg = BIC_DCTCP(args.cwnd_max, args.backlog)
     
     portus.start(args.ipc, alg, debug=args.debug)
