@@ -47,7 +47,7 @@ class BIC_DCTCP_Flow():
     BACKLOG_LEN_MAX = 100
     RANDOM_STATE = 1
     
-    def __init__(self, datapath, datapath_info, cwnd_max, backlog):
+    def __init__(self, datapath, datapath_info, cwnd_max, ecn_frac_thres, backlog):
         
         # cc parameters
         self.datapath = datapath
@@ -55,6 +55,8 @@ class BIC_DCTCP_Flow():
         self.init_cwnd = float(self.datapath_info.mss * BIC_DCTCP_Flow.INIT_CWND)
         self.cwnd = self.init_cwnd
         self.cwnd_max = cwnd_max
+        self.ecn_frac_thres = ecn_frac_thres
+        assert 0 <= ecn_frac_thres < 1
 
         self.backlog = backlog
         if self.backlog > BIC_DCTCP_Flow.BACKLOG_LEN_MAX:
@@ -131,7 +133,7 @@ class BIC_DCTCP_Flow():
                 
                 log.debug('n_ecn_0: {}, n_ecn_1: {}, ecn_frac: {}'.format(n_ecn_NOCONG, n_ecn_CONG, self.ecn_frac))
                 log.debug('Centroids: ({:.7f}, {:.7f})'.format(*self.centroids))
-            if self.ecn_frac > 1:
+            if self.ecn_frac > self.ecn_frac_thres:
                 self.cwnd *= (1 - self.ecn_frac/2)
                 self.cwnd = max(self.cwnd, self.init_cwnd)
             else:
@@ -144,9 +146,11 @@ class BIC_DCTCP_Flow():
 
 class BIC_DCTCP(portus.AlgBase):
     
-    def __init__(self, cwnd_max, backlog, agg_npkts=10):
+    def __init__(self, cwnd_max, ecn_frac_thres, backlog, agg_npkts=10):
         """ 
         cwnd_max: The upper limit on the congestion window. 
+
+        ecn_frac_thres: Threshold on fraction of packets marked with ECN=1 before cwnd is reduced
         
         version: The version of datapath program to use.
         
@@ -159,6 +163,7 @@ class BIC_DCTCP(portus.AlgBase):
         """
         super(BIC_DCTCP, self).__init__()
         self.cwnd_max = cwnd_max
+        self.ecn_frac_thres = ecn_frac_thres
         self.backlog = backlog
         #self.version = version
         self.agg_npkts = agg_npkts
@@ -262,7 +267,7 @@ class BIC_DCTCP(portus.AlgBase):
     #         raise Exception('BIC_DCTCP: Unsupported version')
     
     def new_flow(self, datapath, datapath_info):
-        return BIC_DCTCP_Flow(datapath, datapath_info, self.cwnd_max, self.backlog)
+        return BIC_DCTCP_Flow(datapath, datapath_info, self.cwnd_max, self.ecn_frac_thres, self.backlog)
 
 
 if __name__ == '__main__':
@@ -270,6 +275,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('BIC-DCTCP for mmWave flows')
     #parser.add_argument('version', type=int, choices=(1,2), help='\'1\' or \'2\'')
     parser.add_argument('cwnd_max', type=int, help='Max congestion window (bytes)')
+    parser.add_argument('--ecn_thres', type=float, default=0.5, help='Threshold on ECN frac before cwnd is reduced')
     parser.add_argument('--backlog', '-k', default=10, help='Length of backlog for clustering')
     parser.add_argument('--ipc', choices=('netlink','unix'), default='netlink', help='Set type of ipc to use')
     parser.add_argument('--debug', action='store_true', help='Print debug messages')
@@ -306,6 +312,6 @@ if __name__ == '__main__':
     log.addHandler(fh)
     
     #alg = BIC_DCTCP(args.cwnd_max, args.version)
-    alg = BIC_DCTCP(args.cwnd_max, args.backlog)
+    alg = BIC_DCTCP(args.cwnd_max, args.ecn_thres, args.backlog)
     
     portus.start(args.ipc, alg, debug=args.debug)
