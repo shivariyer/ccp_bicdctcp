@@ -287,17 +287,24 @@ class BIC_DCTCP(portus.AlgBase):
         return BIC_DCTCP_Flow(datapath, datapath_info, self.cwnd_max, self.ecn_frac_thres, self.backlog)
 
 
+def frac_type(arg):
+    val = float(arg)
+    if not 0 < val < 1:
+        raise argparse.ArgumentTypeError('expected a fraction arg in (0,1)')
+    return val
+
+
 if __name__ == '__main__':
     
     parser = argparse.ArgumentParser('BIC-DCTCP for mmWave flows')
     #parser.add_argument('version', type=int, choices=(1,2), help='\'1\' or \'2\'')
     parser.add_argument('cwnd_max', type=int, help='Max congestion window (bytes)')
-    parser.add_argument('--ecn_thres', type=float, default=0.5, help='Threshold on ECN frac before cwnd is reduced')
-    parser.add_argument('--backlog', '-k', default=10, help='Length of backlog for clustering')
+    parser.add_argument('--ecn_thres', type=frac_type, default=0.5, help='Threshold on ECN frac before cwnd is reduced')
+    parser.add_argument('--backlog', '-k', type=int, default=10, help='Length of backlog for clustering')
     parser.add_argument('--ipc', choices=('netlink','unix'), default='netlink', help='Set type of ipc to use')
     parser.add_argument('--debug', action='store_true', help='Print debug messages')
     parser.add_argument('--log', choices=('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'),
-                        default='DEBUG', help='Logging level (default: INFO)')
+                        default='INFO', help='Logging level (default: INFO)')
     parser.add_argument('--log-file-path', dest='logfilepath',
                         help='File in which to log console output')
     args = parser.parse_args()
@@ -315,14 +322,14 @@ if __name__ == '__main__':
     ch.setLevel(log_level_dict[args.log])
 
     if args.logfilepath is None:
-        args.logfilepath = 'logs/bic_dctcp_{}_{}.log'.format(args.cwnd_max, args.ipc)
+        args.logfilepath = 'logs/bicdctcp_{}_ecn{:02.0f}_backlog{:03d}_{}.log'.format(args.cwnd_max, args.ecn_thres*10, args.backlog, args.ipc)
     print('Logging console output to "{}"'.format(args.logfilepath))
     fh = logging.FileHandler(args.logfilepath)
     fh.setLevel(log_level_dict[args.log])
 
-    colorFormatter = coloredlogs.ColoredFormatter(fmt='%(asctime)s [%(name)s] %(levelname)s - %(message)s', datefmt="%H:%M:%S")
-    simpleFormatter = logging.Formatter(fmt='%(asctime)s [%(name)s] %(levelname)s - %(message)s', datefmt="%H:%M:%S")
-    
+    colorFormatter = coloredlogs.ColoredFormatter(fmt='%(asctime)s %(created)f [%(name)s] %(levelname)s - %(message)s', datefmt="%H:%M:%S")
+    simpleFormatter = logging.Formatter(fmt='%(asctime)s %(created)f [%(name)s] %(levelname)s - %(message)s', datefmt="%H:%M:%S")
+        
     ch.setFormatter(colorFormatter)
     fh.setFormatter(simpleFormatter)
     log.addHandler(ch)
