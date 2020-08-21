@@ -98,7 +98,13 @@ class BIC_DCTCP_Flow():
             if len(self.centroids) == 0:
                 self.centroids = (rtt_feature,)
             elif len(self.centroids) == 1:
-                self.centroids = (self.centroids[0], rtt_feature)
+                # ensuring that first two centroids are always
+                # distinct, AND that centroid_0 is always less than
+                # centroid_1
+                if rtt_feature > self.centroids[0]:
+                    self.centroids = (self.centroids[0], rtt_feature)
+                elif rtt_feature < self.centroids[0]:
+                    self.centroids = (rtt_feature, self.centroids[0])
             else:
                 # select only valid data in the backlog
                 data_valid = self.data[np.isfinite(self.data)]
@@ -121,12 +127,12 @@ class BIC_DCTCP_Flow():
                     self.max_centroid_dist = abs(centroid_0 - centroid_1)
                     self.centroids = (centroid_0, centroid_1)
 
-                # assume cluster 0 is CONG, cluster 1 is NOCONG
-                n_ecn_NOCONG, n_ecn_CONG = labels.sum(), (~labels).sum()
+                # cluster 0 is NOCONG, cluster 1 is CONG
+                n_ecn_NOCONG, n_ecn_CONG = (~labels).sum(), labels.sum()
 
                 # if that assumption is wrong, then swap the cluster counts
-                if self.centroids[0] < self.centroids[1]:
-                    n_ecn_NOCONG, n_ecn_CONG = n_ecn_CONG, n_ecn_NOCONG
+                # if self.centroids[0] > self.centroids[1]:
+                #     n_ecn_NOCONG, n_ecn_CONG = n_ecn_CONG, n_ecn_NOCONG
 
                 # compute the ECN frac
                 self.ecn_frac = n_ecn_CONG/float(labels.size)
