@@ -84,7 +84,8 @@ class BIC_DCTCP_Flow():
             #self.cwnd /= 2
             self.cwnd *= (1 - self.ecn_frac/2)
             self.cwnd = max(self.cwnd, self.init_cwnd)
-            log.info("packet loss, loss={}, sacked={}, ecn_frac={}, cwnd={}".format(r.loss, r.sacked, self.ecn_frac, self.cwnd))
+            log.info('PACKET LOSS / MISORDER, loss: {}, sacked: {}, ecn_frac: {}, cwnd: {} bytes'
+                     .format(r.loss, r.sacked, self.ecn_frac, self.cwnd))
         else:
             if r.rtt < self.rtt_min:
                 self.rtt_min = r.rtt
@@ -95,6 +96,7 @@ class BIC_DCTCP_Flow():
             rtt_feature = np.tanh(r.rtt / 1e6)
             self.data[self.counter] = rtt_feature
             self.counter = (self.counter+1) % self.backlog
+            rtt_ecn = 0
             if len(self.centroids) == 0:
                 self.centroids = (rtt_feature,)
             elif len(self.centroids) == 1:
@@ -106,6 +108,11 @@ class BIC_DCTCP_Flow():
                 elif rtt_feature < self.centroids[0]:
                     self.centroids = (rtt_feature, self.centroids[0])
             else:
+                # which cluster does current RTT data point belong to?
+                # (if it is closer to centroid_0, the smaller one,
+                # then ecn is 0, else ecn is 1)
+                rtt_ecn = int((abs(rtt_feature - self.centroids[0]) > abs(rtt_feature - self.centroids[1])))
+
                 # select only valid data in the backlog
                 data_valid = self.data[np.isfinite(self.data)]
 
@@ -139,14 +146,18 @@ class BIC_DCTCP_Flow():
                 
                 log.debug('n_ecn_0: {}, n_ecn_1: {}, ecn_frac: {}'.format(n_ecn_NOCONG, n_ecn_CONG, self.ecn_frac))
                 log.debug('Centroids: ({:.7f}, {:.7f})'.format(*self.centroids))
+
+                action = None
             if self.ecn_frac > self.ecn_frac_thres:
                 self.cwnd *= (1 - self.ecn_frac/2)
                 self.cwnd = max(self.cwnd, self.init_cwnd)
+                action = 'DECREASE'
             else:
                 self.cwnd += (self.cwnd_max - self.cwnd) / 2
                 self.cwnd = min(self.cwnd, self.cwnd_max)
-            log.info('cur rtt: {} us, rtt_feature: {:.7f}, max rtt: {} us, min rtt: {} us, ecn_frac: {}, cwnd: {} bytes'
-                      .format(r.rtt, rtt_feature, self.rtt_max, self.rtt_min, self.ecn_frac, self.cwnd))
+                action = 'INCREASE'
+            log.info('{}, cur_rtt: {} us, cur_rtt_ecn: {}, rtt_feature: {:.7f}, max_rtt: {} us, min_rtt: {} us, ecn_frac: {}, cwnd: {} bytes'
+                     .format(action, r.rtt, rtt_ecn, rtt_feature, self.rtt_max, self.rtt_min, self.ecn_frac, self.cwnd))
         self.datapath.update_field("Cwnd", int(self.cwnd))
 
 
