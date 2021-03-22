@@ -9,37 +9,12 @@
 
 from __future__ import print_function
 
-#from sklearn import cluster
-#from sklearn import preprocessing
-
 import portus
 import numpy as np
 
 import logging
 import coloredlogs
 import argparse
-
-class Dataset(object):
-
-    def __init__(self, X):
-        self.X_orig = np.asarray(X)
-        self.X = self.X_orig
-    
-    def rescale(self):
-        scaler = preprocessing.MinMaxScaler()
-        self.X = scaler.fit_transform(self.X)
-        return self
-    
-    def weight(self, ws):
-        ws = np.asarray(ws)
-        if (ws.ndim > 1) or (ws.size != self.X.shape[1]):
-            raise Exception('Invalid weights!')
-        self.X = (self.X * ws) / ws.sum()
-        return self
-        
-    def transform(self, func):
-        self.X = func(self.X)
-        return self
 
 
 class BIC_DCTCP_Flow():
@@ -65,11 +40,8 @@ class BIC_DCTCP_Flow():
         self.datapath.set_program("default", [("Cwnd", self.cwnd)])
         
         # model specific parameters
-        # self.micros_prev = None
         self.weights = (0.5, 0.5)
-        #self.scaler = preprocessing.MinMaxScaler()
         self.data = np.empty(self.backlog) * np.nan
-        #self.model = cluster.KMeans(2, random_state=BIC_DCTCP_Flow.RANDOM_STATE)
         self.centroids = ()
         self.counter = 0
         self.rtt_max = 0
@@ -91,6 +63,7 @@ class BIC_DCTCP_Flow():
                 self.rtt_min = r.rtt
             if r.rtt > self.rtt_max:
                 self.rtt_max = r.rtt
+
             # rtt is in microseconds (us)
             #rtt_feature = np.exp(r.rtt / 1e6)
             rtt_feature = np.tanh(r.rtt / 1e6)
@@ -163,7 +136,7 @@ class BIC_DCTCP_Flow():
 
 class BIC_DCTCP(portus.AlgBase):
     
-    def __init__(self, cwnd_max, alpha_thres, backlog, agg_npkts=10):
+    def __init__(self, cwnd_max, alpha_thres, backlog):
         """ 
         cwnd_max: The upper limit on the congestion window. 
 
@@ -175,15 +148,11 @@ class BIC_DCTCP(portus.AlgBase):
         
         '2' -- Report at specified aggregated interval
         
-        agg_npkts: Aggregation resolution
-        
         """
         super(BIC_DCTCP, self).__init__()
         self.cwnd_max = cwnd_max
         self.alpha_thres = alpha_thres
         self.backlog = backlog
-        #self.version = version
-        self.agg_npkts = agg_npkts
         log.debug('Created BIC_DCTCP class')
 
     def datapath_programs(self):
@@ -209,80 +178,6 @@ class BIC_DCTCP(portus.AlgBase):
             """
             }
     
-    # def list_datapath_programs(self):
-    #     # TODO: ask Akshay if Flow.rtt_sample_us is an average or
-    #     # is the RTT of the most recent Ack
-    #     log.info('Using version {}'.format(self.version))
-        
-    #     if self.version == 1:
-    #         return {"default" : """\
-    #                         (def (Report
-    #                               (rtt 0)
-    #                               (iat 0)
-    #                               (volatile acked 0)
-    #                               (volatile sacked 0)
-    #                               (volatile loss 0)
-    #                               (volatile timeout false)
-    #                               ))
-    #                         (when true
-    #                           (:= Report.rtt Flow.rtt_sample_us)
-    #                           (:= Report.iat Micros)
-    #                           (:= Report.acked Ack.bytes_acked)
-    #                           (:= Report.sacked Ack.packets_misordered))
-    #                           (:= Report.loss Ack.lost_pkts_sample)
-    #                           (:= Report.timeout Flow.was_timeout)
-    #                           (report)
-    #                           (:= Micros 0)
-    #                           )
-    #         """
-    #         }
-    #     elif self.version == 2:
-    #         return {"default" : """\
-    #                         (def (Report
-    #                               (rtt 0)
-    #                               (micros_prev 0)
-    #                               (micros_cur 0)
-    #                               (iat 0)
-    #                               (volatile acked 0)
-    #                               (volatile sacked 0)
-    #                               (volatile loss 0)
-    #                               (volatile timeout false)
-    #                               )
-    #                              (count 0)
-    #                              (volatile iat_cur 0)
-    #                              )
-    #                         (when true
-    #                           (:= count (+ count 1))
-    #                           (:= Report.rtt Flow.rtt_sample_us)
-    #                           (:= Report.micros_cur Micros)
-    #                           (if (> Report.micros_prev 0)
-    #                             (:= iat_cur (- micros_cur micros_prev))
-    #                             (if (> count 0)
-    #                               (:= Report.iat (/ (+ iat_cur (* Report.iat (- count 1))) count)
-    #                               )
-    #                             )
-    #                           (if (== Report.micros_prev 0)
-    #                             (:= Report.micros_prev Report.micros_cur)
-    #                             )
-    #                           (:= Report.acked Ack.bytes_acked)
-    #                           (:= Report.sacked Ack.packets_misordered))
-    #                           (:= Report.loss Ack.lost_pkts_sample)
-    #                           (:= Report.timeout Flow.was_timeout)
-    #                           (fallthrough)
-    #                           )
-    #                         (when (> Ack.packets_acked {0})
-    #                           (report)
-    #                           (:= Micros 0)
-    #                           )
-    #                         (when (|| Report.timeout (> Report.loss 0))
-    #                           (report)
-    #                           (:= Micros 0)
-    #                           )
-    #         """.format(agg_npkts-1)
-    #         }
-    #     else:
-    #         raise Exception('BIC_DCTCP: Unsupported version')
-    
     def new_flow(self, datapath, datapath_info):
         return BIC_DCTCP_Flow(datapath, datapath_info, self.cwnd_max, self.alpha_thres, self.backlog)
 
@@ -297,7 +192,6 @@ def frac_type(arg):
 if __name__ == '__main__':
     
     parser = argparse.ArgumentParser('BIC-DCTCP for mmWave flows')
-    #parser.add_argument('version', type=int, choices=(1,2), help='\'1\' or \'2\'')
     parser.add_argument('cwnd_max', type=int, help='Max congestion window (bytes)')
     parser.add_argument('--alpha-thres', type=frac_type, default=0.5, help='Threshold on alpha before cwnd is reduced')
     parser.add_argument('--backlog', '-k', type=int, default=10, help='Length of backlog for clustering')
@@ -335,7 +229,6 @@ if __name__ == '__main__':
     log.addHandler(ch)
     log.addHandler(fh)
     
-    #alg = BIC_DCTCP(args.cwnd_max, args.version)
     alg = BIC_DCTCP(args.cwnd_max, args.alpha_thres, args.backlog)
     
     portus.start(args.ipc, alg, debug=args.debug)
