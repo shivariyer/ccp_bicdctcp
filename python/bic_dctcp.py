@@ -193,13 +193,13 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser('BIC-DCTCP for mmWave flows')
     parser.add_argument('cwnd_max', type=int, help='Max congestion window (bytes)')
-    parser.add_argument('--alpha-thres', type=frac_type, default=0.5, help='Threshold on alpha before cwnd is reduced')
-    parser.add_argument('--backlog', '-k', type=int, default=10, help='Length of backlog for clustering')
+    parser.add_argument('--alpha-thres', '-A', type=frac_type, default=0.5, help='Threshold on alpha before cwnd is reduced')
+    parser.add_argument('--backlog', '-B', type=int, default=10, help='Length of backlog for clustering')
     parser.add_argument('--ipc', choices=('netlink','unix'), default='netlink', help='Set type of ipc to use')
     parser.add_argument('--debug', action='store_true', help='Print debug messages')
-    parser.add_argument('--log', choices=('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'),
+    parser.add_argument('--log', '-L', choices=('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'),
                         default='INFO', help='Logging level (default: INFO)')
-    parser.add_argument('--log-file-path', dest='logfilepath',
+    parser.add_argument('--log-file-path', '-F', dest='logfilepath',
                         help='File in which to log console output')
     args = parser.parse_args()
     
