@@ -65,8 +65,9 @@ class BIC_DCTCP_Flow():
                 self.rtt_max = r.rtt
 
             # rtt is in microseconds (us)
+            rtt_feature = r.rtt / 1e6
             #rtt_feature = np.exp(r.rtt / 1e6)
-            rtt_feature = np.tanh(r.rtt / 1e6)
+            #rtt_feature = np.tanh(r.rtt / 1e6)
             self.data[self.counter] = rtt_feature
             self.counter = (self.counter+1) % self.backlog
             rtt_vecn = 0
