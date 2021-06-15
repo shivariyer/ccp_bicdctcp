@@ -22,7 +22,7 @@ class BIC_DCTCP_Flow():
     BACKLOG_LEN_MAX = 100
     RANDOM_STATE = 1
     
-    def __init__(self, datapath, datapath_info, cwnd_max, alpha_thres, backlog):
+    def __init__(self, datapath, datapath_info, cwnd_max, alpha_thres, backlog, preprocess):
         
         # cc parameters
         self.datapath = datapath
@@ -36,6 +36,14 @@ class BIC_DCTCP_Flow():
         self.backlog = backlog
         if self.backlog > BIC_DCTCP_Flow.BACKLOG_LEN_MAX:
             self.backlog = BIC_DCTCP_Flow.BACKLOG_LEN_MAX
+
+        if preprocess is None:
+            self.preprocess = lambda x: x
+        else:
+            if preprocess == 'exp':
+                self.preprocess = np.exp
+            elif preprocess == 'tanh':
+                self.preprocess = np.tanh
 
         self.datapath.set_program("default", [("Cwnd", self.cwnd)])
         
@@ -65,9 +73,10 @@ class BIC_DCTCP_Flow():
                 self.rtt_max = r.rtt
 
             # rtt is in microseconds (us)
-            rtt_feature = r.rtt / 1e6
+            #rtt_feature = r.rtt / 1e6
             #rtt_feature = np.exp(r.rtt / 1e6)
             #rtt_feature = np.tanh(r.rtt / 1e6)
+            rtt_feature = self.preprocess(r.rtt / 1e6)
             self.data[self.counter] = rtt_feature
             self.counter = (self.counter+1) % self.backlog
             rtt_vecn = 0
@@ -137,23 +146,22 @@ class BIC_DCTCP_Flow():
 
 class BIC_DCTCP(portus.AlgBase):
     
-    def __init__(self, cwnd_max, alpha_thres, backlog):
+    def __init__(self, cwnd_max, alpha_thres, backlog, preprocess):
         """ 
         cwnd_max: The upper limit on the congestion window. 
 
         alpha_thres: Threshold on fraction of packets marked with VECN=1 before cwnd is reduced
-        
-        version: The version of datapath program to use.
-        
-        '1' -- Report at every ack 
-        
-        '2' -- Report at specified aggregated interval
+
+        backlog: Length of the backlog (i.e. amount of RTT history maintained)
+
+        preprocess: Preprocessing function to apply to RTT feature
         
         """
         super(BIC_DCTCP, self).__init__()
         self.cwnd_max = cwnd_max
         self.alpha_thres = alpha_thres
         self.backlog = backlog
+        self.preprocess = preprocess
         log.debug('Created BIC_DCTCP class')
 
     def datapath_programs(self):
@@ -180,7 +188,7 @@ class BIC_DCTCP(portus.AlgBase):
             }
     
     def new_flow(self, datapath, datapath_info):
-        return BIC_DCTCP_Flow(datapath, datapath_info, self.cwnd_max, self.alpha_thres, self.backlog)
+        return BIC_DCTCP_Flow(datapath, datapath_info, self.cwnd_max, self.alpha_thres, self.backlog, self.preprocess)
 
 
 def frac_type(arg):
@@ -196,6 +204,7 @@ if __name__ == '__main__':
     parser.add_argument('cwnd_max', type=int, help='Max congestion window (bytes)')
     parser.add_argument('--alpha-thres', '-A', type=frac_type, default=0.5, help='Threshold on alpha before cwnd is reduced')
     parser.add_argument('--backlog', '-B', type=int, default=10, help='Length of backlog for clustering')
+    parser.add_argument('--preprocess', '-P', choices=('tanh', 'exp'), help='Optional preprocessing for RTT features')
     parser.add_argument('--ipc', choices=('netlink','unix'), default='netlink', help='Set type of ipc to use')
     parser.add_argument('--debug', action='store_true', help='Print debug messages')
     parser.add_argument('--log', '-L', choices=('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'),
@@ -217,7 +226,7 @@ if __name__ == '__main__':
     ch.setLevel(log_level_dict[args.log])
 
     if args.logfilepath is None:
-        args.logfilepath = 'logs/bicdctcp_{}_a{:02.0f}_b{:03d}_{}.log'.format(args.cwnd_max, args.alpha_thres*10, args.backlog, args.ipc)
+        args.logfilepath = 'logs/bicdctcp_{}_a{:02.0f}_b{:03d}_P{}_{}.log'.format(args.cwnd_max, args.alpha_thres*10, args.backlog, args.preprocess, args.ipc)
     print('Logging console output to "{}"'.format(args.logfilepath))
     fh = logging.FileHandler(args.logfilepath)
     fh.setLevel(log_level_dict[args.log])
@@ -230,6 +239,6 @@ if __name__ == '__main__':
     log.addHandler(ch)
     log.addHandler(fh)
     
-    alg = BIC_DCTCP(args.cwnd_max, args.alpha_thres, args.backlog)
+    alg = BIC_DCTCP(args.cwnd_max, args.alpha_thres, args.backlog, args.preprocess)
     
     portus.start(args.ipc, alg, debug=args.debug)
